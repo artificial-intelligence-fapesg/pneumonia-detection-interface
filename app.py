@@ -49,7 +49,7 @@ def get_registry():
 registry = get_registry()
 
 st.set_page_config(
-    page_title="Sistema de Apoio ao Diagnóstico | Pneumonia em Radiografias",
+    page_title="VitaLabs Raio-x",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -85,8 +85,8 @@ st.markdown(
         .metric-card .value { font-size: 1.35rem; color: #0B3D66; font-weight: 700; }
 
         .diagnosis-box { border-radius: 12px; padding: 1.6rem; margin-top: 1rem; }
-        .diagnosis-pneumonia { background-color: #FDECEC; border: 2px solid #D64550; }
-        .diagnosis-normal { background-color: #E9F7EF; border: 2px solid #2E9E5B; }
+        .diagnosis-pneumonia { border: 2px solid #D64550; }
+        .diagnosis-normal { border: 2px solid #2E9E5B; }
 
         .disclaimer {
             background-color: #FFF7E6;
@@ -99,11 +99,18 @@ st.markdown(
         }
         .vote-row {
             display: flex; justify-content: space-between; align-items: center;
-            background: white; border: 1px solid #E3E8EE; border-radius: 8px;
+            border: 1px solid #E3E8EE; border-radius: 8px;
             padding: 0.55rem 0.9rem; margin-bottom: 0.4rem; font-size: 0.9rem;
         }
         .vote-pneumonia { color: #D64550; font-weight: 700; }
         .vote-normal { color: #2E9E5B; font-weight: 700; }
+
+        .model-contribution {
+            display: flex; justify-content: space-between;
+            font-size: 0.8rem; color: #5A6B7B;
+            padding: 0.15rem 0;
+        }
+        .model-contribution .valor { font-weight: 600; color: #2C3B4A; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -112,7 +119,7 @@ st.markdown(
 st.markdown(
     """
     <div class="clinical-header">
-        <h1>🔍 Sistema de Apoio ao Diagnóstico Radiológico</h1>
+        <h1>🔍 Sistema de Apoio ao Diagnóstico Radiológico | Vita Labs</h1>
         <p>Triagem assistida por Inteligência Artificial para detecção de pneumonia em radiografias de tórax (RX PA/AP)</p>
     </div>
     """,
@@ -205,77 +212,84 @@ tab_novo, tab_historico = st.tabs(["🩺 Novo Diagnóstico", "🗂️ Histórico
 # ABA 1 — NOVO DIAGNÓSTICO
 # =============================================================================
 with tab_novo:
-    col_form, col_result = st.columns([1, 1.2], gap="large")
+    st.markdown("### 1. Dados do Paciente e do Exame")
 
-    with col_form:
-        st.markdown("### 1. Dados do Paciente e do Exame")
+    with st.form("patient_form", clear_on_submit=False):
+        st.markdown("**Identificação**")
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo do paciente *")
+        prontuario = c2.text_input("Prontuário / ID do exame")
 
-        with st.form("patient_form", clear_on_submit=False):
-            st.markdown("**Identificação**")
-            c1, c2 = st.columns(2)
-            nome = c1.text_input("Nome completo do paciente *")
-            prontuario = c2.text_input("Prontuário / ID do exame")
+        c3, c4, c5 = st.columns(3)
+        data_nascimento = c3.date_input(
+            "Data de nascimento", value=None, min_value=date(1900, 1, 1), max_value=date.today(), format="DD/MM/YYYY"
+        )
+        sexo = c4.selectbox("Sexo", ["Não informado", "Masculino", "Feminino", "Outro"])
+        data_exame = c5.date_input("Data do exame", value=date.today(), format="DD/MM/YYYY")
 
-            c3, c4, c5 = st.columns(3)
-            data_nascimento = c3.date_input(
-                "Data de nascimento", value=None, min_value=date(1900, 1, 1), max_value=date.today(), format="DD/MM/YYYY"
-            )
-            sexo = c4.selectbox("Sexo", ["Não informado", "Masculino", "Feminino", "Outro"])
-            data_exame = c5.date_input("Data do exame", value=date.today(), format="DD/MM/YYYY")
+        medico_solicitante = st.text_input("Médico solicitante")
+        indicacao_clinica = st.text_area(
+            "Indicação clínica / motivo do exame",
+            placeholder="Ex.: Investigação de quadro respiratório agudo, febre há 3 dias...",
+            height=70,
+        )
 
-            medico_solicitante = st.text_input("Médico solicitante")
-            indicacao_clinica = st.text_area(
-                "Indicação clínica / motivo do exame",
-                placeholder="Ex.: Investigação de quadro respiratório agudo, febre há 3 dias...",
-                height=70,
-            )
+        st.markdown("**Quadro clínico**")
+        c6, c7 = st.columns(2)
+        sintomas = c6.multiselect(
+            "Sintomas",
+            ["Febre", "Tosse", "Dispneia", "Dor torácica", "Fadiga", "Calafrios",
+             "Produção de escarro", "Confusão mental", "Outros"],
+        )
+        comorbidades = c7.multiselect(
+            "Comorbidades / fatores de risco",
+            ["Diabetes", "Hipertensão", "DPOC", "Asma", "Imunossupressão",
+             "Cardiopatia", "Tabagismo", "Obesidade", "Idade avançada (>65 anos)", "Outros"],
+        )
 
-            st.markdown("**Quadro clínico**")
-            c6, c7 = st.columns(2)
-            sintomas = c6.multiselect(
-                "Sintomas",
-                ["Febre", "Tosse", "Dispneia", "Dor torácica", "Fadiga", "Calafrios",
-                 "Produção de escarro", "Confusão mental", "Outros"],
-            )
-            comorbidades = c7.multiselect(
-                "Comorbidades / fatores de risco",
-                ["Diabetes", "Hipertensão", "DPOC", "Asma", "Imunossupressão",
-                 "Cardiopatia", "Tabagismo", "Obesidade", "Idade avançada (>65 anos)", "Outros"],
-            )
+        c8, c9, c10 = st.columns(3, vertical_alignment="bottom")
+        saturacao_o2 = c8.number_input("Saturação de O₂ (%)", min_value=0, max_value=100, value=0, step=1)
+        temperatura_c = c9.number_input("Temperatura corporal (°C)", min_value=30.0, max_value=43.0, value=36.5, step=0.1)
+        frequencia_resp = c10.number_input("Frequência respiratória (irpm)", min_value=0, max_value=80, value=0, step=1)
 
-            c8, c9, c10 = st.columns(3)
-            saturacao_o2 = c8.number_input("Saturação de O₂ (%)", min_value=0, max_value=100, value=0, step=1)
-            temperatura_c = c9.number_input("Temperatura corporal (°C)", min_value=30.0, max_value=43.0, value=36.5, step=0.1)
-            frequencia_resp = c10.number_input("Frequência respiratória (irpm)", min_value=0, max_value=80, value=0, step=1)
+        observacoes = st.text_area("Observações clínicas adicionais", height=60)
 
-            observacoes = st.text_area("Observações clínicas adicionais", height=60)
+        st.markdown("**Radiografia**")
+        uploaded_file = st.file_uploader(
+            "Envie a imagem de radiografia de tórax (JPG ou PNG)",
+            type=["jpg", "jpeg", "png"],
+            help="Recomenda-se incidência PA (póstero-anterior) ou AP (ântero-posterior) de tórax.",
+        )
+        radiologista = st.text_input("Radiologista responsável pela análise")
 
-            st.markdown("**Radiografia**")
-            uploaded_file = st.file_uploader(
-                "Envie a imagem de radiografia de tórax (JPG ou PNG)",
-                type=["jpg", "jpeg", "png"],
-                help="Recomenda-se incidência PA (póstero-anterior) ou AP (ântero-posterior) de tórax.",
-            )
-            radiologista = st.text_input("Radiologista responsável pela análise")
+        submitted = st.form_submit_button(
+            "🔎 Iniciar Análise Diagnóstica", type="primary", use_container_width=True
+        )
 
-            submitted = st.form_submit_button(
-                "🔎 Iniciar Análise Diagnóstica", type="primary", use_container_width=True
-            )
+    # OBSERVAÇÃO: como o upload está dentro do st.form, o Streamlit só nos
+    # entrega o arquivo quando o formulário é enviado (é assim que forms
+    # funcionam — nada dentro deles atualiza a tela antes do submit). Por
+    # isso não conseguimos saber, antes do clique, se uma imagem já foi
+    # selecionada; a pré-visualização e o laudo só aparecem depois do envio.
+    image = None
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
 
-        image = None
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file)
+    st.divider()
+    st.markdown("### 2. Resultado da Análise")
+    col_image, col_result = st.columns([1, 1.2], gap="large")
+
+    with col_image:
+        if image is not None:
             st.image(image, caption="Radiografia carregada", use_container_width=True)
+        else:
+            st.info("Nenhuma radiografia carregada ainda.")
 
     with col_result:
-        st.markdown("### 2. Resultado da Análise")
         result_placeholder = st.empty()
 
-        if not uploaded_file:
-            result_placeholder.info(
-                "Preencha os dados do paciente, envie a radiografia e clique em "
-                "**Iniciar Análise Diagnóstica** para obter o laudo assistido por IA."
-            )
+        if not submitted:
+            result_placeholder.info("O relatório aparecerá aqui...")
 
         if submitted:
             if not nome:
@@ -395,13 +409,43 @@ with tab_novo:
                     )
 
                     st.markdown("#### Distribuição de Probabilidades (consolidada)")
+
+                    # Rótulo do modelo (ou do modo de votação) usado para gerar o consolidado
+                    modelo_label = (
+                        f"Votação ({len(modelos_ensemble)} modelos)" if is_ensemble else modo_selecionado
+                    )
+
                     prob_cols = st.columns(2)
+
                     with prob_cols[0]:
                         st.metric("Normal", f"{result.probabilities['Normal']*100:.1f}%")
+                        st.caption(f"Modelo: {modelo_label}")
                         st.progress(result.probabilities["Normal"])
+                        if is_ensemble:
+                            # Mostra a contribuição de cada modelo para esta porcentagem consolidada
+                            contrib_html = "".join(
+                                f"""<div class="model-contribution">
+                                        <span>{r.model_name}</span>
+                                        <span class="valor">{r.probabilities['Normal']*100:.1f}%</span>
+                                    </div>"""
+                                for r in result.individual_results
+                            )
+                            st.markdown(contrib_html, unsafe_allow_html=True)
+
                     with prob_cols[1]:
                         st.metric("Pneumonia", f"{result.probabilities['Pneumonia']*100:.1f}%")
+                        st.caption(f"Modelo: {modelo_label}")
                         st.progress(result.probabilities["Pneumonia"])
+                        if is_ensemble:
+                            # Mostra a contribuição de cada modelo para esta porcentagem consolidada
+                            contrib_html = "".join(
+                                f"""<div class="model-contribution">
+                                        <span>{r.model_name}</span>
+                                        <span class="valor">{r.probabilities['Pneumonia']*100:.1f}%</span>
+                                    </div>"""
+                                for r in result.individual_results
+                            )
+                            st.markdown(contrib_html, unsafe_allow_html=True)
 
                     if is_ensemble:
                         st.markdown("#### Detalhamento da Votação por Modelo")
@@ -419,7 +463,11 @@ with tab_novo:
                                 f"""
                                 <div class="vote-row">
                                     <span><strong>{r.model_name}</strong></span>
-                                    <span class="{vote_class}">{r.label} ({r.confidence*100:.1f}%)</span>
+                                    <span>
+                                        Normal: {r.probabilities['Normal']*100:.1f}% ·
+                                        Pneumonia: {r.probabilities['Pneumonia']*100:.1f}% ·
+                                        <span class="{vote_class}">Previsto: {r.label} ({r.confidence*100:.1f}%)</span>
+                                    </span>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
@@ -506,7 +554,12 @@ with tab_historico:
                 votos = json.loads(registro["votos_individuais"])
                 st.markdown("**Detalhe da votação:**")
                 for v in votos:
-                    st.caption(f"- {v['modelo']}: {v['label']} ({v['confidence']*100:.1f}%)")
+                    prob_normal = v.get("prob_normal")
+                    prob_pneumonia = v.get("prob_pneumonia")
+                    detalhe_prob = ""
+                    if prob_normal is not None and prob_pneumonia is not None:
+                        detalhe_prob = f" — Normal: {prob_normal*100:.1f}% · Pneumonia: {prob_pneumonia*100:.1f}%"
+                    st.caption(f"- {v['modelo']}: {v['label']} ({v['confidence']*100:.1f}%){detalhe_prob}")
 
 # ---------------------------------------------------------------------------
 # Rodapé

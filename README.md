@@ -82,45 +82,90 @@ filtrar por resultado (Normal/Pneumonia) e visualizar o detalhe
 completo de cada exame, incluindo a imagem e o voto individual de
 cada modelo.
 
-## Como integrar seus modelos reais
+### Erro "Unrecognized keyword arguments" / `quantization_config`
 
-Todo o trabalho de integração acontece em **`pneumonia_detector.py`**.
-A interface (`app.py`) e o banco de dados (`database.py`) não
-precisam ser alterados.
+Se você treinou o modelo com uma versão do TensorFlow/Keras mais nova
+do que a instalada onde a interface roda, pode aparecer um erro como:
 
-1. Treine cada modelo (classificação binária: Normal vs. Pneumonia) e
-   salve os pesos (ex.: `.h5` para Keras, `.pt` para PyTorch) na pasta
-   `models/`.
+```
+TypeError: Unrecognized keyword arguments passed to Dense: {'quantization_config': None}
+```
 
-2. Para cada modelo, implemente o carregamento e a inferência dentro
-   da classe `PneumoniaDetector` (métodos `_load_model`,
-   `_preprocess` e `predict`). Já existem exemplos comentados para
-   **TensorFlow/Keras** e **PyTorch**.
+Isso acontece porque o `.h5` guarda a configuração de cada camada, e
+versões mais novas do Keras às vezes adicionam parâmetros que versões
+mais antigas ainda não conhecem. **Você não precisa fazer nada** — o
+`PneumoniaDetector` detecta esse erro automaticamente e recarrega o
+modelo em um "modo de compatibilidade": remove da configuração apenas
+os parâmetros que a versão local não reconhece e mantém os pesos
+originais intactos. Uma mensagem no console avisa quando isso
+acontece (`"...carregado com sucesso em modo de compatibilidade."`).
 
-3. Atualize o dicionário `MODEL_CATALOG` (em `pneumonia_detector.py`)
-   com as métricas reais de cada modelo, calculadas em um conjunto de
-   teste independente: `acuracia`, `precisao`, `recall`, `f1_score`,
-   `especificidade`.
+Se mesmo assim o carregamento falhar, a forma mais segura é alinhar
+as versões: reexporte o modelo com a mesma versão de TensorFlow
+listada em `requirements.txt` (2.16+) e salve novamente.
 
-4. Em `build_model_registry()`, troque cada
-   `MockPneumoniaDetector(...)` por uma instância real:
+## Como integrar seus modelos reais (.h5, TensorFlow 2.16+)
 
-   ```python
-   registry.register(
-       PneumoniaDetector(
-           name="ModeloA_AltaAcuracia",
-           model_path="models/modelo_a.h5",
-           metrics=MODEL_CATALOG["ModeloA_AltaAcuracia"],
-       )
-   )
-   ```
+`PneumoniaDetector` já sabe carregar e executar modelos Keras salvos em
+`.h5`/`.hdf5` (ou no formato nativo `.keras`), treinados com
+**TensorFlow 2.16 ou superior** — exatamente os modelos gerados pelo
+notebook de treinamento deste projeto.
 
-   Repita para cada modelo do catálogo. Você pode ter quantos modelos
-   quiser — todos aparecerão automaticamente no seletor da interface
-   e poderão participar da votação.
+### Caminho mais simples (sem editar nenhum código)
 
-5. Reinicie o Streamlit. A interface passará a usar seus modelos
-   reais, com o mesmo fluxo de seleção, votação e histórico.
+1. Treine o modelo e salve-o em `.h5` com o **mesmo nome** de uma das
+   chaves do `MODEL_CATALOG` (em `pneumonia_detector.py`):
+   `ModeloA_AltaAcuracia.h5`, `ModeloB_AltaPrecisao.h5` ou
+   `ModeloC_AltoF1.h5`.
+2. Copie o arquivo para a pasta `models/`.
+3. Reinicie o Streamlit.
+
+Pronto — `build_model_registry()` detecta o arquivo automaticamente e
+passa a usar o modelo real no lugar do simulado (mock). O tamanho de
+entrada da imagem e o formato de saída do modelo (1 neurônio sigmoid
+ou 2 neurônios softmax) são detectados automaticamente a partir do
+próprio arquivo `.h5`. Você pode ter modelos reais para alguns nomes e
+deixar outros como mock — cada um é resolvido de forma independente,
+e todos continuam disponíveis na votação (ensemble).
+
+### Caminho manual (nome de arquivo ou caminho customizado)
+
+Se preferir não usar a convenção de nomes acima, registre manualmente
+em `build_model_registry()`:
+
+```python
+registry.register(
+    PneumoniaDetector(
+        name="ModeloA_AltaAcuracia",
+        model_path="models/meu_arquivo_customizado.h5",
+        metrics=MODEL_CATALOG["ModeloA_AltaAcuracia"],
+    )
+)
+```
+
+### Observações importantes sobre pré-processamento
+
+- Por padrão (`normalize=False`), o `PneumoniaDetector` **não** divide
+  os pixels por 255 antes de enviar ao modelo — porque as arquiteturas
+  do notebook de treinamento já incluem uma camada `Rescaling(1./255)`
+  como primeira camada. Se o seu modelo espera entrada já normalizada
+  em `[0, 1]` e **não** tem essa camada internamente, instancie com
+  `PneumoniaDetector(..., normalize=True)`.
+- Se o seu modelo usa camadas, losses ou métricas customizadas que o
+  Keras não reconhece automaticamente ao carregar, passe-as via
+  `custom_objects` — ajuste a chamada de
+  `tf.keras.models.load_model(...)` dentro de
+  `PneumoniaDetector._load_model()`.
+- Se o carregamento de um `.h5` falhar (arquivo corrompido, formato
+  incompatível, etc.), o app registra um aviso no console e usa
+  automaticamente o modelo simulado (mock) no lugar, para que a
+  interface continue funcional.
+
+### Métricas do modelo
+
+Atualize `MODEL_CATALOG` (em `pneumonia_detector.py`) com as métricas
+reais de cada modelo, calculadas em um conjunto de teste independente:
+`acuracia`, `precisao`, `recall`, `f1_score`, `especificidade`.
 
 ## Esquema do banco de dados
 
