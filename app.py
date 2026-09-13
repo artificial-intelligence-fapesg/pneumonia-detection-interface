@@ -24,6 +24,7 @@ from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 import database as db
@@ -34,6 +35,9 @@ from pneumonia_detector import (
     EnsembleResult,
     build_model_registry,
 )
+
+# Quantidade máxima de exames exibidos por página no histórico de detecções.
+ITENS_POR_PAGINA_HISTORICO = 5
 
 # ---------------------------------------------------------------------------
 # Inicialização
@@ -111,6 +115,24 @@ st.markdown(
             padding: 0.15rem 0;
         }
         .model-contribution .valor { font-weight: 600; color: #2C3B4A; }
+
+        /* --- Caixa de dados/exames no painel de detalhes do histórico --- */
+        .exam-info-row {
+            display: flex; justify-content: space-between;
+            padding: 0.3rem 0; font-size: 0.88rem;
+            border-bottom: 1px dashed #E3E8EE;
+        }
+        .exam-info-row .rotulo { color: #5A6B7B; }
+        .exam-info-row .valor { color: #2C3B4A; font-weight: 600; text-align: right; }
+
+        /* --- Faz a caixa de tags do multiselect (sintomas, comorbidades,
+             etc.) ficar em uma única linha, com rolagem horizontal, em vez
+             de cortar os itens já adicionados. A rolagem com a roda do
+             mouse é habilitada via JavaScript no final do arquivo. --- */
+        div[data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            flex-shrink: 0;
+            margin: 3px !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -508,58 +530,214 @@ with tab_historico:
     if not registros:
         st.info("Nenhum registro encontrado. Realize uma análise na aba **Novo Diagnóstico**.")
     else:
-        df = pd.DataFrame(registros)
-        df_display = df[
-            ["data_deteccao", "nome", "prontuario", "idade", "sexo", "label",
-             "confidence", "modelo_utilizado", "concordancia_modelos"]
-        ].copy()
-        df_display.columns = [
-            "Data/Hora", "Paciente", "Prontuário", "Idade", "Sexo",
-            "Resultado", "Confiança", "Modelo(s)", "Concordância",
-        ]
-        df_display["Confiança"] = (df_display["Confiança"] * 100).round(1).astype(str) + "%"
-        df_display["Concordância"] = df_display["Concordância"].map(
-            {1: "✅ Unânime", 0: "⚠️ Divergência"}
-        ).fillna("—")
+        # -- Controle de qual exame está com os detalhes abertos --------------
+        if "detalhe_id" not in st.session_state:
+            st.session_state["detalhe_id"] = None
 
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        ids_disponiveis = {r["detection_id"] for r in registros}
+        if st.session_state["detalhe_id"] not in ids_disponiveis:
+            # Se o exame selecionado não está mais na lista filtrada (ou é a
+            # primeira visita à aba), abre os detalhes do mais recente.
+            st.session_state["detalhe_id"] = registros[0]["detection_id"]
 
-        st.markdown("#### Detalhes do Exame")
-        opcoes_detalhe = {
-            f"#{r['detection_id']} · {r['nome']} · {r['data_deteccao']}": r for r in registros
-        }
-        escolha = st.selectbox("Selecione um exame para ver o detalhe completo", list(opcoes_detalhe.keys()))
-        registro = opcoes_detalhe[escolha]
+        # -- Controle de paginação ----------------------------------------------
+        # Reinicia a página para a primeira sempre que os filtros de busca
+        # mudam, para não deixar o usuário "perdido" numa página vazia.
+        filtro_atual = (busca, filtro_resultado)
+        if st.session_state.get("historico_filtro_anterior") != filtro_atual:
+            st.session_state["historico_filtro_anterior"] = filtro_atual
+            st.session_state["historico_pagina"] = 0
 
-        dcol1, dcol2 = st.columns([1, 1.3])
-        with dcol1:
-            if registro.get("image_path"):
-                try:
-                    st.image(registro["image_path"], caption="Radiografia analisada", use_container_width=True)
-                except Exception:
-                    st.caption("Imagem não disponível.")
+        if "historico_pagina" not in st.session_state:
+            st.session_state["historico_pagina"] = 0
 
-        with dcol2:
-            st.markdown(f"**Paciente:** {registro['nome']} ({registro.get('idade', '—')} anos, {registro.get('sexo', '—')})")
-            st.markdown(f"**Prontuário:** {registro.get('prontuario') or '—'}")
-            st.markdown(f"**Data do exame:** {registro.get('data_exame') or '—'}")
-            st.markdown(f"**Médico solicitante:** {registro.get('medico_solicitante') or '—'}")
-            st.markdown(f"**Indicação clínica:** {registro.get('indicacao_clinica') or '—'}")
-            st.markdown(f"**Resultado:** {registro['label']} (confiança {registro['confidence']*100:.1f}%)")
-            st.markdown(f"**Modelo(s) utilizado(s):** {registro['modelo_utilizado']}")
-            st.markdown(f"**Radiologista:** {registro.get('radiologista') or '—'}")
+        total_paginas = max(1, -(-len(registros) // ITENS_POR_PAGINA_HISTORICO))  # ceil
+        st.session_state["historico_pagina"] = min(
+            st.session_state["historico_pagina"], total_paginas - 1
+        )
+        pagina_atual = st.session_state["historico_pagina"]
 
-            if registro.get("votos_individuais"):
-                import json
-                votos = json.loads(registro["votos_individuais"])
-                st.markdown("**Detalhe da votação:**")
-                for v in votos:
-                    prob_normal = v.get("prob_normal")
-                    prob_pneumonia = v.get("prob_pneumonia")
-                    detalhe_prob = ""
-                    if prob_normal is not None and prob_pneumonia is not None:
-                        detalhe_prob = f" — Normal: {prob_normal*100:.1f}% · Pneumonia: {prob_pneumonia*100:.1f}%"
-                    st.caption(f"- {v['modelo']}: {v['label']} ({v['confidence']*100:.1f}%){detalhe_prob}")
+        inicio = pagina_atual * ITENS_POR_PAGINA_HISTORICO
+        fim = inicio + ITENS_POR_PAGINA_HISTORICO
+        registros_pagina = registros[inicio:fim]
+
+        st.caption(
+            f"{len(registros)} exame(s) encontrado(s) · "
+            f"Exibindo {inicio + 1}–{min(fim, len(registros))} de {len(registros)}"
+        )
+
+        # -- Cabeçalho da tabela ------------------------------------------------
+        col_widths = [1.3, 1.8, 1.1, 0.9, 1.1, 0.9]
+        headers = ["Data/Hora", "Paciente", "Resultado", "Confiança", "Concordância", ""]
+        header_cols = st.columns(col_widths)
+        for col, texto in zip(header_cols, headers):
+            col.markdown(f"<span style='font-size:0.8rem; color:#5A6B7B; font-weight:700; text-transform:uppercase;'>{texto}</span>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:0.2rem 0 0.6rem 0;'>", unsafe_allow_html=True)
+
+        # -- Linhas da tabela (apenas da página atual), cada uma com botão
+        #    "Visualizar" ---------------------------------------------------
+        for r in registros_pagina:
+            is_selecionado = r["detection_id"] == st.session_state["detalhe_id"]
+            with st.container(border=True):
+                row_cols = st.columns(col_widths, vertical_alignment="center")
+                row_cols[0].write(r["data_deteccao"])
+                row_cols[1].write(f"**{r['nome']}**")
+
+                is_pneumonia_row = r["label"] == "Pneumonia"
+                cor = "#D64550" if is_pneumonia_row else "#2E9E5B"
+                icone = "🔴" if is_pneumonia_row else "🟢"
+                row_cols[2].markdown(
+                    f"<span style='color:{cor}; font-weight:700;'>{icone} {r['label']}</span>",
+                    unsafe_allow_html=True,
+                )
+                row_cols[3].write(f"{r['confidence']*100:.1f}%")
+
+                concordancia = r.get("concordancia_modelos")
+                if concordancia == 1:
+                    row_cols[4].markdown("✅ Unânime")
+                elif concordancia == 0:
+                    row_cols[4].markdown("⚠️ Divergência")
+                else:
+                    row_cols[4].write("—")
+
+                botao_label = "🔎 Visualizando" if is_selecionado else "👁️ Visualizar"
+                if row_cols[5].button(
+                    botao_label, key=f"ver_{r['detection_id']}",
+                    use_container_width=True,
+                    type="primary" if is_selecionado else "secondary",
+                ):
+                    st.session_state["detalhe_id"] = r["detection_id"]
+                    st.rerun()
+
+        # -- Controles de paginação ----------------------------------------------
+        if total_paginas > 1:
+            nav_cols = st.columns([1, 2, 1])
+            with nav_cols[0]:
+                if st.button("⬅️ Anterior", disabled=(pagina_atual == 0), use_container_width=True):
+                    st.session_state["historico_pagina"] -= 1
+                    st.rerun()
+            with nav_cols[1]:
+                st.markdown(
+                    f"<div style='text-align:center; padding-top:0.4rem; color:#5A6B7B;'>"
+                    f"Página {pagina_atual + 1} de {total_paginas}</div>",
+                    unsafe_allow_html=True,
+                )
+            with nav_cols[2]:
+                if st.button("Próxima ➡️", disabled=(pagina_atual >= total_paginas - 1), use_container_width=True):
+                    st.session_state["historico_pagina"] += 1
+                    st.rerun()
+
+        # -- Painel de detalhes do exame selecionado ----------------------------
+        registro = next((r for r in registros if r["detection_id"] == st.session_state["detalhe_id"]), None)
+
+        if registro:
+            st.markdown("---")
+            st.markdown(f"### 📋 Detalhes do Exame — {registro['nome']}")
+
+            is_pneumonia_reg = registro["label"] == "Pneumonia"
+            cor = "#D64550" if is_pneumonia_reg else "#2E9E5B"
+            icone = "🔴" if is_pneumonia_reg else "🟢"
+            achado = (
+                "Padrão radiográfico sugestivo de <strong>consolidação/infiltrado "
+                "compatível com processo pneumônico</strong>."
+                if is_pneumonia_reg
+                else "Padrão radiográfico <strong>sem sinais sugestivos de consolidação "
+                "pulmonar</strong> compatível com pneumonia."
+            )
+
+            st.markdown(
+                f"""
+                <div class="diagnosis-box" style="border: 2px solid {cor}; margin-top: 20px; margin-bottom: 20px;">
+                    <h3>{icone} Resultado: {registro['label']}</h3>
+                    <p>{achado}</p>
+                    <p><strong>Confiança do resultado:</strong> {registro['confidence']*100:.1f}%</p>
+                    <p style="font-size:0.85rem; color:#5A6B7B;">
+                        Exame: {registro.get('prontuario') or "não identificado"} ·
+                        Modelo(s): {registro['modelo_utilizado']} ·
+                        Processado em {registro['data_deteccao']}
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            dcol1, dcol2 = st.columns([1, 1.1], gap="large")
+
+            with dcol1:
+                if registro.get("image_path"):
+                    try:
+                        st.image(registro["image_path"], caption="Radiografia analisada", use_container_width=True)
+                    except Exception:
+                        st.caption("Imagem não disponível.")
+
+                st.markdown("#### 🧑‍⚕️ Dados do paciente e do exame")
+                info_rows = [
+                    ("Idade", f"{registro.get('idade', '—')} anos"),
+                    ("Sexo", registro.get("sexo") or "—"),
+                    ("Prontuário", registro.get("prontuario") or "—"),
+                    ("Data do exame", registro.get("data_exame") or "—"),
+                    ("Médico solicitante", registro.get("medico_solicitante") or "—"),
+                    ("Indicação clínica", registro.get("indicacao_clinica") or "—"),
+                    ("Radiologista", registro.get("radiologista") or "—"),
+                ]
+                info_html = "".join(
+                    f"""<div class="exam-info-row">
+                            <span class="rotulo">{rotulo}</span>
+                            <span class="valor">{valor}</span>
+                        </div>"""
+                    for rotulo, valor in info_rows
+                )
+                st.markdown(info_html, unsafe_allow_html=True)
+
+            with dcol2:
+                st.markdown("#### 📊 Distribuição de Probabilidades")
+                prob_normal = registro.get("prob_normal")
+                prob_pneumonia = registro.get("prob_pneumonia")
+                prob_cols = st.columns(2)
+                with prob_cols[0]:
+                    if prob_normal is not None:
+                        st.metric("🟢 Normal", f"{prob_normal*100:.1f}%")
+                        st.progress(prob_normal)
+                with prob_cols[1]:
+                    if prob_pneumonia is not None:
+                        st.metric("🔴 Pneumonia", f"{prob_pneumonia*100:.1f}%")
+                        st.progress(prob_pneumonia)
+
+                if registro.get("votos_individuais"):
+                    import json
+                    votos = json.loads(registro["votos_individuais"])
+
+                    st.markdown("#### 🗳️ Detalhamento da votação por modelo")
+                    if registro.get("concordancia_modelos") == 1:
+                        st.success("✅ Todos os modelos concordaram quanto ao resultado.")
+                    elif registro.get("concordancia_modelos") == 0:
+                        st.warning(
+                            "⚠️ Os modelos **divergiram** quanto ao resultado — recomenda-se "
+                            "atenção redobrada na correlação clínica e revisão manual da imagem."
+                        )
+
+                    for v in votos:
+                        v_is_pneumonia = v["label"] == "Pneumonia"
+                        vote_color = "#D64550" if v_is_pneumonia else "#2E9E5B"
+                        prob_normal_v = v.get("prob_normal")
+                        prob_pneumonia_v = v.get("prob_pneumonia")
+                        detalhe_probs = ""
+                        if prob_normal_v is not None and prob_pneumonia_v is not None:
+                            detalhe_probs = f"Normal: {prob_normal_v*100:.1f}% · Pneumonia: {prob_pneumonia_v*100:.1f}%"
+                        st.markdown(
+                            f"""
+                            <div class="vote-row" style="flex-direction: column; align-items: flex-start;">
+                                <div style="display:flex; justify-content: space-between; width: 100%;">
+                                    <strong>{v['modelo']}:&nbsp</strong>
+                                    <span style="color:{vote_color}; font-weight:700;">{v['label']} ({v['confidence']*100:.1f}%)</span>
+                                </div>
+                                <div style="font-size:0.78rem; color:#5A6B7B; margin-top:0.2rem;">{detalhe_probs}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+        else:
+            st.info("Selecione um exame na lista acima para ver os detalhes.")
 
 # ---------------------------------------------------------------------------
 # Rodapé
@@ -568,4 +746,90 @@ st.divider()
 st.caption(
     "Sistema de apoio ao diagnóstico por imagem · Uso restrito a profissionais de saúde · "
     "Não substitui avaliação médica presencial."
+)
+
+# ---------------------------------------------------------------------------
+# Habilita rolagem horizontal com a roda do mouse na caixa de tags dos
+# multiselects (sintomas, comorbidades, etc.).
+#
+# Colocado no FINAL do arquivo de propósito: assim, quando este script
+# rodar dentro do iframe do componente, todos os widgets da página já
+# foram renderizados no documento pai, evitando a corrida em que o script
+# tenta encontrar elementos que ainda não existem.
+#
+# Em vez de depender de uma estrutura fixa de divs aninhadas (que muda
+# entre versões do Streamlit), o script localiza o container correto
+# dinamicamente: ele parte das próprias "tags" (os itens já selecionados)
+# e usa o elemento-pai delas — que é, por definição, a caixa que precisa
+# rolar. O estilo (uma linha só, com overflow horizontal) é aplicado
+# diretamente via JavaScript, então não depende do CSS ter acertado o
+# seletor. O listener de "wheel" é registrado em fase de captura, para
+# rodar antes de qualquer outro handler que possa interceptar o evento.
+# ---------------------------------------------------------------------------
+components.html(
+    """
+    <script>
+    function habilitarScrollHorizontalMultiselect() {
+        let doc;
+        try {
+            doc = window.parent.document;
+        } catch (erro) {
+            return; // sem acesso ao documento pai (não deveria acontecer aqui)
+        }
+
+        const tags = doc.querySelectorAll('div[data-testid="stMultiSelect"] [data-baseweb="tag"]');
+        const containers = new Set();
+        tags.forEach((tag) => {
+            if (tag.parentElement) {
+                containers.add(tag.parentElement);
+            }
+        });
+
+        containers.forEach((caixa) => {
+            // Aplica o estilo diretamente no elemento, sem depender do CSS.
+            caixa.style.display = "flex";
+            caixa.style.flexWrap = "nowrap";
+            caixa.style.overflowX = "auto";
+            caixa.style.overflowY = "hidden";
+            caixa.style.scrollbarWidth = "thin";
+
+            if (!caixa.dataset.scrollHorizontalAtivo) {
+                caixa.dataset.scrollHorizontalAtivo = "true";
+                caixa.addEventListener(
+                    "wheel",
+                    function (evento) {
+                        if (caixa.scrollWidth > caixa.clientWidth) {
+                            evento.preventDefault();
+                            evento.stopPropagation();
+                            caixa.scrollLeft += evento.deltaY;
+                        }
+                    },
+                    { passive: false, capture: true }
+                );
+            }
+        });
+
+        return containers.size;
+    }
+
+    // Primeira tentativa imediata.
+    habilitarScrollHorizontalMultiselect();
+
+    // Reaplica sempre que o Streamlit re-renderizar a página (troca de
+    // aba, mudança de filtro, nova seleção, etc.), já que os elementos
+    // podem ser recriados.
+    try {
+        const observador = new MutationObserver(habilitarScrollHorizontalMultiselect);
+        observador.observe(window.parent.document.body, { childList: true, subtree: true });
+    } catch (erro) {
+        // ignora se não for possível observar (ambiente restrito)
+    }
+
+    // Rede de segurança: tenta novamente a cada meio segundo, caso o
+    // MutationObserver perca alguma atualização. A função é segura de
+    // rodar repetidamente (só registra o listener uma vez por elemento).
+    setInterval(habilitarScrollHorizontalMultiselect, 500);
+    </script>
+    """,
+    height=0,
 )
